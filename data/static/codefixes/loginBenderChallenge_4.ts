@@ -13,31 +13,62 @@ module.exports = function login () {
       })
   }
 
+  const validateEmail = (email: string): boolean => {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+  };
+
   return (req: Request, res: Response, next: NextFunction) => {
-    models.sequelize.query('SELECT * FROM Users WHERE email = ? AND password = ? AND deletedAt IS NULL',
-      { 
-        replacements: [req.body.email || '', security.hash(req.body.password || '')],
-        model: models.User, 
-        plain: false 
-      })
-      .then((authenticatedUser) => {
-        const user = utils.queryResultToJson(authenticatedUser)
-        if (user.data?.id && user.data.totpSecret !== '') {
-          res.status(401).json({
+    const email = req.body.email || '';
+    const password = req.body.password || '';
+
+    // Input validation
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    if (!validateEmail(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    // Use Sequelize model instead of raw query
+    models.User.findOne({
+      where: {
+        email: email,
+        password: security.hash(password),
+        deletedAt: null
+      },
+      attributes: ['id', 'email', 'totpSecret'], // Only select needed fields
+      raw: true
+    })
+      .then((user) => {
+        if (!user) {
+          return res.status(401).json({ error: 'Invalid email or password' });
+        }
+
+        if (user.totpSecret) {
+          return res.status(401).json({
             status: 'totp_token_required',
             data: {
               tmpToken: security.authorize({
-                userId: user.data.id,
+                userId: user.id,
                 type: 'password_valid_needs_second_factor_token'
               })
             }
-          })
-        } else if (user.data?.id) {
-          afterLogin(user, res, next)
-        } else {
-          res.status(401).send(res.__('Invalid email or password.'))
+          });
         }
-      }).catch((error: Error) => {
-        next(error)
+
+        // Wrap the user object to match the expected format
+        const userWrapper = {
+          data: user,
+          bid: 0 // This will be set in afterLogin
+        };
+
+        afterLogin(userWrapper, res, next);
+      })
+      .catch((error: Error) => {
+        // Log the error but don't expose details to client
+        console.error('Authentication error:', error);
+        res.status(500).json({ error: 'An error occurred during authentication' });
       })
   }
